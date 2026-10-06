@@ -1,80 +1,57 @@
-# 소리노트 — 비음성 소리의 한글 전사 테스트
+# 소리노트 — Groq Whisper STT 테스트
 
-목표는 **들리는 소리 자체를 한글 의성어로 전사**하는 것입니다. 소리의 순서, 반복, 길이와 쉼을 표현합니다.
+사용자는 마이크 권한 허용 → 녹음 → 종료 → STT 전송만 진행합니다. API 주소·키·모델·입력 언어는 개발자가 실행 전에 설정하며 앱에 입력란을 표시하지 않습니다.
 
-- 전사 예시: `멍! 멍멍… 으르렁`, `끼이익… 쾅!`, `톡… 톡톡… 쏴아아`
-- 분류명(`개 짖음`)이나 상황 설명(`개가 짖고 있습니다`)은 목표 출력이 아닙니다.
-- 정해진 분류 결과를 의성어로 치환하지 않고 입력 오디오에서 전사해야 합니다.
+## 개발자 설정
 
-## 현재 구현 범위
-
-iOS·macOS 녹음, API 전송, 전사 결과 표시 및 샘플 UI를 구현했습니다. **실제 오디오를 한글로 전사하는 모델/백엔드는 아직 연결되지 않았습니다.** 요청의 task 이름과 지침만으로 모델 기능이 생기지는 않습니다. 아래는 이 앱에서 정의한 임시 계약이며 특정 제공자의 표준 API가 아닙니다.
-
-## 실행
-
-```sh
-flutter pub get
-flutter run
-```
-
-맥에서 실행하려면 `flutter run -d macos`를 사용합니다. `샘플 체험`은 API 없이 확인할 수 있습니다. `실제 API`에서 녹음을 시작하면 마이크 권한을 요청합니다. 다른 앱으로 전환하면 녹음이 종료됩니다.
-
-독립 실행 앱 빌드: `flutter build macos --debug`. 실행: `open build/macos/Build/Products/Debug/first_flutter.app`.
-
-iPhone 또는 iOS 시뮬레이터에서도 실행할 수 있습니다. 실제 마이크 입력 검증은 iPhone에서 진행하세요.
-
-- **샘플 체험:** 예시 1~3으로 미리 작성된 전사 텍스트를 표시합니다. 마이크나 모델을 사용하지 않습니다.
-- **실제 API:** HTTPS 주소와 필요한 경우 테스트용 Bearer 토큰 입력 → 최대 15초 녹음 → 종료 → `API로 전송 · 소리 전사`.
-- 기록·토큰·녹음은 영구 저장하지 않습니다. 녹음 임시 파일은 읽기/취소 후 삭제합니다.
-- 백그라운드 이동 시 녹음 종료. 전화 등 오디오 인터럽트 발생 시 다시 녹음하도록 안내합니다.
-
-## 임시 API 계약
-
-요청: `POST`, `Content-Type: application/json`, 선택적 `Authorization: Bearer ...`
+`config/stt.local.json`의 `STT_API_KEY`에 Groq API 키를 입력하세요. 파일은 Git에서 제외됩니다. 새 체크아웃에서는 `config/stt.example.json`을 복사해 만드세요.
 
 ```json
 {
-  "audio_base64": "<WAV 파일의 Base64>",
-  "mime_type": "audio/wav",
-  "language": "ko",
-  "task": "non_speech_sound_transcription",
-  "instructions": "<SoundService.transcriptionInstructions의 전사 지침>"
+  "STT_API_URL": "https://api.groq.com/openai/v1/audio/transcriptions",
+  "STT_API_KEY": "여기에 Groq API 키 입력",
+  "STT_MODEL": "whisper-large-v3-turbo",
+  "STT_LANGUAGE": "ko"
 }
 ```
 
-전사 지침은 들리는 비음성 소리를 한글 의성어로 옮기고 순서·반복·길이·쉼을 보존하도록 요청합니다. 분류명과 상황 설명, 사람의 말 받아쓰기, 들리지 않는 소리의 추가는 제외합니다. 무음은 `[무음]`, 전사할 수 없는 구간은 `[전사 불확실]`로 요청합니다.
-
-오디오: 16 kHz, mono, 16-bit PCM WAV, 최대 15초.
-
-성공 응답: HTTP 2xx
-
-```json
-{"transcript_ko": "끼이익… 쾅!"}
+```sh
+flutter run -d macos --dart-define-from-file=config/stt.local.json
+# iPhone 실행
+flutter run -d <device-id> --dart-define-from-file=config/stt.local.json
 ```
 
-기존 `caption_ko` 응답은 받지 않습니다. 앱은 응답 구조를 검사하지만 문자열이 실제 소리와 일치하는지는 자동 검증하지 못합니다. 백엔드에서 지침을 모델에 전달하고 실제 오디오로 품질을 검증해야 합니다.
+설정을 변경하면 실행을 종료하고 위 명령으로 다시 실행하세요. Hot reload만으로는 적용되지 않습니다. 키가 없으면 녹음은 가능하지만 전송 전에 서비스 미설정 안내를 표시합니다. 설정 파일의 내용이나 키를 로그·대화에 붙여 넣지 마세요.
 
-45초 응답 제한, 1 MiB 응답 크기 제한, HTTPS만 지원합니다. 실패 후 녹음을 수동 재전송할 수 있습니다. 배포 시 모델 제공자 키는 백엔드에서 관리하고, 앱 입력 토큰은 테스트 서버용으로 사용하세요.
+빌드도 같은 옵션을 사용합니다.
 
-## 다음 API 연결 시 검증
+```sh
+flutter build macos --debug --dart-define-from-file=config/stt.local.json
+flutter build ios --debug --dart-define-from-file=config/stt.local.json
+```
 
-1. 같은 종류의 소리라도 반복 횟수와 길이가 다르면 전사가 달라지는지 확인.
-2. 여러 소리가 섞인 녹음에서 순서와 쉼이 보존되는지 확인.
-3. 분류명이나 설명문이 아닌 의성어가 반환되는지 확인.
-4. 무음·불확실한 소리에서 그럴듯한 소리를 만들어내지 않는지 확인.
+**현재 방식은 개발용입니다.** `dart-define`은 키 보관소가 아니며 키가 앱 바이너리에 포함됩니다. 외부 사용자에게 배포할 때는 Groq 키를 백엔드에 보관하고 앱은 그 백엔드를 호출하도록 바꿔야 합니다. Git 제외는 저장소 유출 방지이며 앱에서 키 추출을 막는 기능이 아닙니다.
 
-## 코드와 검사
+## 동작
 
-- `lib/sound_page.dart`: 샘플·녹음·전송·전사 UI 및 상태
-- `lib/sound_service.dart`: 녹음 채널, 전사 지침, API 요청/응답
-- `ios/Runner/AppDelegate.swift`: iOS 녹음 및 Flutter 채널
-- `macos/Runner/MainFlutterWindow.swift`: macOS 녹음 및 Flutter 채널
-- `test/widget_test.dart`: 샘플 구분, 권한 거부, 자동 종료, 응답 검증
+- iOS·macOS 마이크로 최대 15초 녹음합니다. 첫 녹음 시 OS 권한을 요청합니다.
+- 다른 앱으로 전환하면 녹음을 종료합니다.
+- STT 전송 시 설정한 서버에 WAV를 업로드합니다. 자동 재시도하지 않습니다.
+- 모델의 전사 텍스트를 그대로 표시합니다. 빈 결과는 별도 안내합니다.
+- 오디오·전사 기록은 실행 중에만 유지됩니다.
+- 한국어는 `ko`, 영어는 `en`, 자동 감지는 `STT_LANGUAGE`를 빈 문자열로 지정합니다.
+
+[Groq STT 공식 문서](https://console.groq.com/docs/speech-to-text)의 OpenAI 호환 multipart 업로드를 사용합니다. `file`은 16 kHz mono 16-bit PCM WAV이며 `model`, `language`(자동 감지는 생략), `response_format=json`을 보냅니다. 응답은 `{"text":"전사 결과"}`입니다.
+
+일반 음성 받아쓰기 테스트이며 최종 목표인 비음성 소리의 한글 의성어 전사를 보장하지 않습니다. Qwen 전용 어댑터는 없으며 같은 계약을 지원하는 서버에 한해 설정을 바꿔 연결할 수 있습니다.
+
+## 검증
 
 ```sh
 flutter analyze
 flutter test
-flutter build ios --simulator --debug
+# 키 없이 로컬 HTTPS 서버로 WAV 업로드와 오류 처리 검증 (openssl 필요)
+dart run tool/stt_smoke_test.dart
 ```
 
-스트리밍, 녹음 재생, 영구 기록 저장은 아직 포함하지 않습니다.
+실제 모델 호출은 개발자가 키를 설정한 뒤 확인합니다. 로컬 HTTPS 테스트는 외부 API를 호출하지 않습니다.

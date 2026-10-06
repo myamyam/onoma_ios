@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'sound_service.dart';
+import 'stt_config.dart';
 
 enum CaptureState { ready, starting, recording, stopping, transcribing }
 
@@ -15,11 +16,8 @@ class SoundPage extends StatefulWidget {
 
 class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
   final _service = SoundService();
-  final _endpoint = TextEditingController();
-  final _token = TextEditingController();
   final _results = <SoundResult>[];
   CaptureState _state = CaptureState.ready;
-  bool _demo = true;
   int _seconds = 0;
   Timer? _timer;
   Uint8List? _audio;
@@ -47,8 +45,6 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     unawaited(_service.cancel().catchError((Object _) {}));
-    _endpoint.dispose();
-    _token.dispose();
     super.dispose();
   }
 
@@ -102,6 +98,10 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
 
   Future<void> _transcribe() async {
     if (_audio == null || _busy) return;
+    if (SttConfig.apiKey.trim().isEmpty) {
+      setState(() => _error = '전사 서비스가 아직 준비되지 않았습니다. 개발자에게 문의해주세요.');
+      return;
+    }
     setState(() {
       _state = CaptureState.transcribing;
       _error = null;
@@ -109,8 +109,10 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
     try {
       final result = await _service.transcribe(
         _audio!,
-        _endpoint.text,
-        _token.text,
+        SttConfig.endpoint,
+        SttConfig.apiKey,
+        model: SttConfig.model,
+        language: SttConfig.language,
       );
       if (mounted) setState(() => _results.insert(0, result));
     } catch (error) {
@@ -128,13 +130,6 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
     _ => '연결에 실패했습니다. 네트워크와 API 설정을 확인해주세요.',
   };
 
-  void _sample(String transcript) {
-    setState(() {
-      _error = null;
-      _results.insert(0, SoundResult(transcript, true));
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -144,7 +139,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
       CaptureState.starting => '마이크 준비 중',
       CaptureState.recording => '주변 소리를 듣고 있어요',
       CaptureState.stopping => '녹음 마무리 중',
-      CaptureState.transcribing => '들리는 소리를 한글로 전사하는 중',
+      CaptureState.transcribing => 'STT 모델이 전사하는 중',
     };
     return Scaffold(
       appBar: AppBar(
@@ -163,135 +158,63 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
             padding: const EdgeInsets.all(24),
             children: [
               Text(
-                '들리는 소리 그대로',
+                '녹음하고, 텍스트로.',
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
               ),
               const SizedBox(height: 12),
-              const Text('멍! 멍멍… 끼이익… 쾅! 소리의 순서와 반복을 글자로 담아요.'),
+              const Text('마이크로 녹음한 소리를 텍스트로 확인해보세요.'),
               const SizedBox(height: 24),
-              SegmentedButton<bool>(
-                segments: const [
-                  ButtonSegment(
-                    value: true,
-                    label: Text('샘플 체험'),
-                    icon: Icon(Icons.science_outlined),
-                  ),
-                  ButtonSegment(
-                    value: false,
-                    label: Text('실제 API'),
-                    icon: Icon(Icons.cloud_outlined),
-                  ),
-                ],
-                selected: {_demo},
-                onSelectionChanged: _busy
-                    ? null
-                    : (value) => setState(() {
-                        _demo = value.first;
-                        _error = null;
-                      }),
-              ),
+              const Text('전송 버튼을 누르면 녹음이 음성 인식 서버로 전송됩니다.'),
               const SizedBox(height: 16),
-              if (_demo) ...[
-                const Text('미리 작성한 전사 예시입니다. 실제 오디오를 듣고 전사한 결과가 아닙니다.'),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ActionChip(
-                      avatar: const Icon(Icons.graphic_eq),
-                      label: const Text('예시 1'),
-                      onPressed: () => _sample('멍! 멍멍… 으르렁'),
-                    ),
-                    ActionChip(
-                      avatar: const Icon(Icons.graphic_eq),
-                      label: const Text('예시 2'),
-                      onPressed: () => _sample('톡… 톡톡… 쏴아아'),
-                    ),
-                    ActionChip(
-                      avatar: const Icon(Icons.graphic_eq),
-                      label: const Text('예시 3'),
-                      onPressed: () => _sample('끼이익… 쾅!'),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                const Text('녹음 후 전송 버튼을 누르면 아래 API로 오디오를 보냅니다.'),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _endpoint,
-                  enabled: !_busy,
-                  keyboardType: TextInputType.url,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'API 주소 (HTTPS)',
-                    hintText: 'https://your-server.com/transcribe-sound',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _token,
-                  enabled: !_busy,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: '테스트용 Bearer 토큰 (선택)',
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      children: [
-                        Icon(
-                          recording ? Icons.graphic_eq : Icons.mic_none_rounded,
-                          size: 56,
-                          color: recording
-                              ? Colors.redAccent
-                              : theme.colorScheme.primary,
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      Icon(
+                        recording ? Icons.graphic_eq : Icons.mic_none_rounded,
+                        size: 56,
+                        color: recording
+                            ? Colors.redAccent
+                            : theme.colorScheme.primary,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(status, style: theme.textTheme.titleMedium),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${_seconds.toString().padLeft(2, '0')} / 15초',
+                        style: theme.textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: recording ? _stop : (_busy ? null : _start),
+                        icon: Icon(recording ? Icons.stop : Icons.mic),
+                        label: Text(recording ? '녹음 종료' : '마이크로 녹음'),
+                      ),
+                      if (_state == CaptureState.transcribing)
+                        const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: LinearProgressIndicator(),
                         ),
-                        const SizedBox(height: 12),
-                        Text(status, style: theme.textTheme.titleMedium),
+                      if (_audio != null) ...[
                         const SizedBox(height: 8),
-                        Text(
-                          '${_seconds.toString().padLeft(2, '0')} / 15초',
-                          style: theme.textTheme.headlineSmall,
-                        ),
-                        const SizedBox(height: 16),
-                        FilledButton.icon(
-                          onPressed: recording
-                              ? _stop
-                              : (_busy ? null : _start),
-                          icon: Icon(recording ? Icons.stop : Icons.mic),
-                          label: Text(recording ? '녹음 종료' : '소리 녹음'),
-                        ),
-                        if (_state == CaptureState.transcribing)
-                          const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: LinearProgressIndicator(),
-                          ),
-                        if (_audio != null) ...[
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: _busy ? null : _transcribe,
-                            icon: const Icon(Icons.upload_rounded),
-                            label: const Text('API로 전송 · 소리 전사'),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        const Text(
-                          '최대 15초 · 화면을 벗어나면 녹음 종료',
-                          textAlign: TextAlign.center,
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _transcribe,
+                          icon: const Icon(Icons.upload_rounded),
+                          label: const Text('STT 전송'),
                         ),
                       ],
-                    ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '최대 15초 · 화면을 벗어나면 녹음 종료',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
                 ),
-              ],
+              ),
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -320,7 +243,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 28),
                   child: Text(
-                    '아직 기록이 없어요.\n샘플을 선택하거나 주변 소리를 녹음해보세요.',
+                    '아직 기록이 없어요.\n마이크로 녹음한 뒤 STT 전송을 눌러보세요.',
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -328,15 +251,15 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                 Card(
                   child: ListTile(
                     contentPadding: const EdgeInsets.all(16),
-                    leading: Icon(
-                      result.isDemo ? Icons.science_outlined : Icons.graphic_eq,
+                    leading: const Icon(Icons.notes),
+                    title: SelectableText(
+                      result.transcript.trim().isEmpty
+                          ? '모델이 전사 텍스트를 반환하지 않았습니다.'
+                          : result.transcript,
                     ),
-                    title: Text(result.transcript),
                     subtitle: Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        result.isDemo ? '샘플 · 실제 전사 아님' : 'API 전사 결과',
-                      ),
+                      child: Text('${result.model} · STT 결과'),
                     ),
                   ),
                 ),
