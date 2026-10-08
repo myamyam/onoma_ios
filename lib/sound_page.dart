@@ -8,21 +8,33 @@ import 'stt_config.dart';
 
 enum CaptureState { ready, starting, recording, stopping, transcribing }
 
+class RecordingEntry {
+  RecordingEntry(this.result, Uint8List audio)
+    : audio = Uint8List.fromList(audio);
+  final SoundResult result;
+  final Uint8List audio;
+}
+
 class SoundPage extends StatefulWidget {
-  const SoundPage({super.key});
+  const SoundPage({super.key, this.service});
+  final SoundService? service;
   @override
   State<SoundPage> createState() => _SoundPageState();
 }
 
 class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
-  final _service = SoundService();
-  final _results = <SoundResult>[];
+  late final _service = widget.service ?? SoundService();
+  final _results = <RecordingEntry>[];
+  RecordingEntry? _playing;
+  Timer? _playbackTimer;
+  bool _playbackBusy = false;
+  int _playbackGeneration = 0;
   CaptureState _state = CaptureState.ready;
   int _seconds = 0;
   Timer? _timer;
   Uint8List? _audio;
   String? _error;
-  bool get _busy => _state != CaptureState.ready;
+  bool get _busy => _state != CaptureState.ready || _playbackBusy;
 
   @override
   void initState() {
@@ -38,11 +50,15 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
         _state == CaptureState.recording) {
       unawaited(_stop());
     }
+    if (state != AppLifecycleState.resumed && _playing != null) {
+      unawaited(_stopPlayback().catchError((Object _) {}));
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _playbackTimer?.cancel();
     _timer?.cancel();
     unawaited(_service.cancel().catchError((Object _) {}));
     super.dispose();
@@ -56,6 +72,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
       _seconds = 0;
     });
     try {
+      await _stopPlayback();
       await _service.start();
       if (!mounted) return;
       setState(() => _state = CaptureState.recording);
@@ -99,26 +116,105 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
   Future<void> _transcribe() async {
     if (_audio == null || _busy) return;
     if (SttConfig.apiKey.trim().isEmpty) {
-      setState(() => _error = '전사 서비스가 아직 준비되지 않았습니다. 개발자에게 문의해주세요.');
+      setState(
+        () => _error =
+            SttConfig.loadError ?? '전사 서비스가 아직 준비되지 않았습니다. 개발자에게 문의해주세요.',
+      );
       return;
     }
     setState(() {
       _state = CaptureState.transcribing;
       _error = null;
     });
+    final submittedAudio = _audio!;
     try {
       final result = await _service.transcribe(
-        _audio!,
+        submittedAudio,
         SttConfig.endpoint,
         SttConfig.apiKey,
         model: SttConfig.model,
         language: SttConfig.language,
       );
-      if (mounted) setState(() => _results.insert(0, result));
+      if (mounted) {
+        setState(
+          () => _results.insert(0, RecordingEntry(result, submittedAudio)),
+        );
+      }
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
       if (mounted) setState(() => _state = CaptureState.ready);
+    }
+  }
+
+  Future<void> _stopPlayback() async {
+    _playbackGeneration++;
+    _playbackTimer?.cancel();
+    if (mounted) setState(() => _playing = null);
+    await _service.stopPlayback();
+  }
+
+  Future<void> _togglePlayback(RecordingEntry entry) async {
+    if (_busy) return;
+    final wasPlaying = identical(_playing, entry);
+    setState(() {
+      _playbackBusy = true;
+      _error = null;
+    });
+    try {
+      await _stopPlayback();
+      if (!wasPlaying && mounted) {
+        final generation = _playbackGeneration;
+        setState(() => _playing = entry);
+        await _service.play(entry.audio);
+        if (!mounted || !identical(_playing, entry)) return;
+        _playbackTimer = Timer.periodic(const Duration(milliseconds: 200), (
+          _,
+        ) async {
+          try {
+            final active = await _service.isPlaying();
+            if (mounted &&
+                generation == _playbackGeneration &&
+                identical(_playing, entry) &&
+                !active) {
+              _playbackTimer?.cancel();
+              setState(() => _playing = null);
+            }
+          } catch (_) {
+            if (mounted &&
+                generation == _playbackGeneration &&
+                identical(_playing, entry)) {
+              _playbackTimer?.cancel();
+              setState(() {
+                _playing = null;
+                _error = '녹음 재생 상태를 확인하지 못했습니다.';
+              });
+            }
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _playing = null;
+          _error = '녹음을 재생하지 못했습니다. 다시 시도해주세요.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _playbackBusy = false);
+    }
+  }
+
+  Future<void> _clearHistory() async {
+    if (_busy) return;
+    setState(() => _playbackBusy = true);
+    try {
+      await _stopPlayback();
+      if (mounted) setState(_results.clear);
+    } catch (_) {
+      if (mounted) setState(() => _error = '재생을 중지하지 못했습니다. 다시 시도해주세요.');
+    } finally {
+      if (mounted) setState(() => _playbackBusy = false);
     }
   }
 
@@ -232,12 +328,12 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                   ),
                   if (_results.isNotEmpty)
                     TextButton(
-                      onPressed: _busy ? null : () => setState(_results.clear),
+                      onPressed: _busy ? null : _clearHistory,
                       child: const Text('지우기'),
                     ),
                 ],
               ),
-              const Text('이번 실행 중의 결과만 표시됩니다.'),
+              const Text('전사와 녹음은 앱 실행 중에만 보관됩니다.'),
               const SizedBox(height: 12),
               if (_results.isEmpty)
                 const Padding(
@@ -247,19 +343,38 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                     textAlign: TextAlign.center,
                   ),
                 ),
-              for (final result in _results)
+              for (final entry in _results)
                 Card(
                   child: ListTile(
                     contentPadding: const EdgeInsets.all(16),
                     leading: const Icon(Icons.notes),
                     title: SelectableText(
-                      result.transcript.trim().isEmpty
+                      entry.result.transcript.trim().isEmpty
                           ? '모델이 전사 텍스트를 반환하지 않았습니다.'
-                          : result.transcript,
+                          : entry.result.transcript,
                     ),
                     subtitle: Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text('${result.model} · STT 결과'),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${entry.result.model} · STT 결과'),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: _busy
+                                ? null
+                                : () => _togglePlayback(entry),
+                            icon: Icon(
+                              identical(_playing, entry)
+                                  ? Icons.stop
+                                  : Icons.play_arrow,
+                            ),
+                            label: Text(
+                              identical(_playing, entry) ? '재생 정지' : '녹음 듣기',
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

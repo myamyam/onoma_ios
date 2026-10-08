@@ -25,7 +25,8 @@ import UIKit
   }
 }
 
-private final class SoundAudioBridge: NSObject, AVAudioRecorderDelegate {
+private final class SoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
+  private var player: AVAudioPlayer?
   private var recorder: AVAudioRecorder?
   private var fileURL: URL?
   private var failure: String?
@@ -45,6 +46,7 @@ private final class SoundAudioBridge: NSObject, AVAudioRecorderDelegate {
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "start":
+      stopPlayback()
       guard !starting, recorder == nil else {
         result(FlutterError(code: "busy", message: "이미 녹음 중입니다.", details: nil))
         return
@@ -108,10 +110,36 @@ private final class SoundAudioBridge: NSObject, AVAudioRecorderDelegate {
       }
       result(FlutterStandardTypedData(bytes: data))
     case "cancel":
+      stopPlayback()
       generation += 1
       starting = false
       cleanup()
       result(nil)
+    case "play":
+      guard !starting, recorder == nil,
+        let audio = call.arguments as? FlutterStandardTypedData else {
+        result(FlutterError(code: "playback", message: "녹음을 재생할 수 없습니다.", details: nil))
+        return
+      }
+      stopPlayback()
+      do {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
+        let player = try AVAudioPlayer(data: audio.data)
+        self.player = player
+        player.delegate = self
+        guard player.play() else { throw NSError(domain: "SoundNotes", code: 2) }
+        result(nil)
+      } catch {
+        stopPlayback()
+        result(FlutterError(code: "playback", message: "녹음 재생에 실패했습니다.", details: nil))
+      }
+    case "stopPlayback":
+      stopPlayback()
+      result(nil)
+    case "isPlaying":
+      result(player?.isPlaying ?? false)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -119,18 +147,39 @@ private final class SoundAudioBridge: NSObject, AVAudioRecorderDelegate {
 
   @objc private func interrupted(_ notification: Notification) {
     guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-      raw == AVAudioSession.InterruptionType.began.rawValue, recorder != nil else { return }
+      raw == AVAudioSession.InterruptionType.began.rawValue else { return }
+    stopPlayback()
+    guard recorder != nil else { return }
     failure = "전화 또는 다른 오디오 사용으로 녹음이 중단되었습니다. 다시 녹음해주세요."
     recorder?.stop()
   }
 
   @objc private func backgrounded() {
+    stopPlayback()
     recorder?.stop()
     try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
   }
 
   func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
     failure = "오디오 저장 중 오류가 발생했습니다. 다시 녹음해주세요."
+  }
+
+  private func stopPlayback() {
+    player?.stop()
+    player = nil
+    if recorder == nil && !starting {
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+  }
+
+  func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    guard self.player === player else { return }
+    stopPlayback()
+  }
+
+  func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+    guard self.player === player else { return }
+    stopPlayback()
   }
 
   private func cleanup() {

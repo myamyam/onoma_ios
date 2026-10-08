@@ -16,21 +16,21 @@
 ```
 
 ```sh
-flutter run -d macos --dart-define-from-file=config/stt.local.json
-# iPhone 실행
-flutter run -d <device-id> --dart-define-from-file=config/stt.local.json
+flutter run -d macos
+# iPhone 실행 (이름이 겹치는 기기가 여러 대면 목록에서 선택)
+flutter run -d iPhone
 ```
 
-설정을 변경하면 실행을 종료하고 위 명령으로 다시 실행하세요. Hot reload만으로는 적용되지 않습니다. 키가 없으면 녹음은 가능하지만 전송 전에 서비스 미설정 안내를 표시합니다. 설정 파일의 내용이나 키를 로그·대화에 붙여 넣지 마세요.
+설정을 변경하면 실행을 종료하고 위 명령으로 다시 실행하세요. Hot reload만으로는 적용되지 않습니다. `--dart-define-from-file`은 더 이상 필요하지 않으며 설정은 JSON 파일을 기준으로 합니다. 키가 없으면 녹음은 가능하지만 전송 전에 서비스 미설정 안내를 표시합니다. 설정 파일의 내용이나 키를 로그·대화에 붙여 넣지 마세요.
 
-빌드도 같은 옵션을 사용합니다.
+별도 설정 옵션 없이 빌드할 수 있습니다. 앱 시작 시 번들에 포함된 로컬 JSON을 읽습니다.
 
 ```sh
-flutter build macos --debug --dart-define-from-file=config/stt.local.json
-flutter build ios --debug --dart-define-from-file=config/stt.local.json
+flutter build macos --debug
+flutter build ios --debug
 ```
 
-**현재 방식은 개발용입니다.** `dart-define`은 키 보관소가 아니며 키가 앱 바이너리에 포함됩니다. 외부 사용자에게 배포할 때는 Groq 키를 백엔드에 보관하고 앱은 그 백엔드를 호출하도록 바꿔야 합니다. Git 제외는 저장소 유출 방지이며 앱에서 키 추출을 막는 기능이 아닙니다.
+**현재 방식은 개발용입니다.** 로컬 JSON은 앱 asset에 포함되므로 앱 파일에서 키를 추출할 수 있습니다. 외부 사용자에게 배포할 때는 Groq 키를 백엔드에 보관하고 앱은 그 백엔드를 호출하도록 바꿔야 합니다. Git 제외는 저장소 유출 방지이며 앱에서 키 추출을 막는 기능이 아닙니다.
 
 ## 동작
 
@@ -38,7 +38,8 @@ flutter build ios --debug --dart-define-from-file=config/stt.local.json
 - 다른 앱으로 전환하면 녹음을 종료합니다.
 - STT 전송 시 설정한 서버에 WAV를 업로드합니다. 자동 재시도하지 않습니다.
 - 모델의 전사 텍스트를 그대로 표시합니다. 빈 결과는 별도 안내합니다.
-- 오디오·전사 기록은 실행 중에만 유지됩니다.
+- 전사 기록의 **녹음 듣기 / 재생 정지**로 해당 요청에 사용한 원본 녹음을 들을 수 있습니다. 다른 기록 재생·새 녹음·기록 지우기·앱 전환 시 재생을 종료합니다.
+- 오디오·전사 기록은 실행 중에만 유지됩니다. 앱을 종료하면 사라집니다.
 - 한국어는 `ko`, 영어는 `en`, 자동 감지는 `STT_LANGUAGE`를 빈 문자열로 지정합니다.
 
 [Groq STT 공식 문서](https://console.groq.com/docs/speech-to-text)의 OpenAI 호환 multipart 업로드를 사용합니다. `file`은 16 kHz mono 16-bit PCM WAV이며 `model`, `language`(자동 감지는 생략), `response_format=json`을 보냅니다. 응답은 `{"text":"전사 결과"}`입니다.

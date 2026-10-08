@@ -5,6 +5,11 @@ export 'stt_client.dart';
 
 class SoundService extends SttClient {
   static const channel = MethodChannel('sound_notes/audio');
+  Future<void> play(Uint8List audio) =>
+      channel.invokeMethod<void>('play', audio);
+  Future<void> stopPlayback() => channel.invokeMethod<void>('stopPlayback');
+  Future<bool> isPlaying() async =>
+      await channel.invokeMethod<bool>('isPlaying') ?? false;
   Future<void> start() => channel.invokeMethod<void>('start');
   Future<void> cancel() => channel.invokeMethod<void>('cancel');
   Future<Uint8List> stop() async {

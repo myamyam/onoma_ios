@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'sound_page.dart';
+import 'stt_config.dart';
 
-void main() => runApp(const MyApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SttConfig.load();
+  runApp(const MyApp());
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
