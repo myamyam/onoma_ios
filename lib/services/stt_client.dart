@@ -1,3 +1,5 @@
+import '../utils/api_error.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -94,7 +96,10 @@ class SttClient {
             >= 500 => 'STT 서버에 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
             _ => 'API가 요청을 거부했습니다. 모델과 오디오 업로드 형식을 확인해주세요.',
           };
-          throw FormatException('$message (HTTP ${response.statusCode})');
+          final detail = await apiErrorDetail(response, secret: token);
+          throw FormatException(
+            '$message (HTTP ${response.statusCode})${detail.isEmpty ? '' : ': $detail'}',
+          );
         }
         final bytes = <int>[];
         await for (final chunk in response) {

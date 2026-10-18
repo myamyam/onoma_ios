@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:first_flutter/stt_client.dart';
+import 'package:first_flutter/services/stt_client.dart';
 
 void check(bool condition, String message) {
   if (!condition) throw StateError(message);

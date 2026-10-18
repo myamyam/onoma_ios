@@ -2,40 +2,78 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:first_flutter/main.dart';
-import 'package:first_flutter/sound_page.dart';
-import 'package:first_flutter/stt_config.dart';
-import 'package:first_flutter/sound_service.dart';
+import 'package:first_flutter/services/haptic_service.dart';
+import 'package:first_flutter/widgets/mucap_visualization.dart';
+import 'package:first_flutter/pages/sound_page.dart';
+import 'package:first_flutter/services/sound_service.dart';
+import 'package:first_flutter/services/mucap_client.dart';
+import 'package:first_flutter/models/nonspeech_transcription.dart';
 
-class FakeTranscriptionService extends SoundService {
+class FakeMucapClient extends MucapClient {
+  bool fail = false;
+  bool failOutputs = false;
+  int outputCalls = 0;
+  final uploads = <Uint8List>[];
   @override
-  Future<SoundResult> transcribe(
-    Uint8List audio,
-    String endpoint,
-    String token, {
-    String model = 'test',
-    String language = 'ko',
-  }) async {
-    return SoundResult('녹음 ${audio.first}', model);
+  Future<NonspeechTranscription> transcribe(Uint8List audio) async {
+    uploads.add(audio);
+    if (fail) throw const FormatException('전사 테스트 오류');
+    return NonspeechTranscription(1, 'test', [
+      NonspeechCue(0, 1, '둥${audio.first}'),
+    ]);
   }
+
+  @override
+  Future<MucapResult> enrich(
+    Uint8List audio,
+    NonspeechTranscription transcript,
+  ) async {
+    outputCalls++;
+    if (failOutputs) throw const FormatException('outputs failed');
+    return MucapResult(
+      transcript.duration,
+      transcript.model,
+      transcript.captions
+          .map((cue) => CaptionCue(cue.time, cue.end, cue.text, .5, 26))
+          .toList(),
+      [const HapticEvent(time: 0, duration: .08, intensity: .5, sharpness: .5)],
+    );
+  }
+
+  @override
+  Future<MucapResult> analyze(Uint8List audio) =>
+      throw StateError('Full pipeline must not run');
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          HapticService.channel,
+          (call) async =>
+              call.method == 'isSupported' || call.method == 'isPlaying'
+              ? false
+              : null,
+        );
+  });
   tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(HapticService.channel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SoundService.channel, null);
   });
 
-  testWidgets('API 입력란 없이 녹음 화면 표시', (tester) async {
+  testWidgets('전사 화면은 STT·시각화·햅틱 생성 없이 표시', (tester) async {
     await tester.pumpWidget(const MyApp());
-    expect(find.text('샘플 체험'), findsNothing);
+    expect(find.text('STT 전송'), findsNothing);
+    expect(find.text('MuCap 분석'), findsNothing);
+    expect(find.text('햅틱 재생'), findsNothing);
     expect(find.byType(TextField), findsNothing);
-    expect(find.text('API 키 / Bearer 토큰'), findsNothing);
-    await tester.scrollUntilVisible(find.text('마이크로 녹음'), 300);
     expect(find.text('마이크로 녹음'), findsOneWidget);
   });
 
-  testWidgets('권한 거부 안내 및 재시도', (tester) async {
+  testWidgets('권한 거부 후 다시 녹음 가능', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SoundService.channel, (call) async {
           if (call.method == 'start') {
@@ -47,7 +85,8 @@ void main() {
           return null;
         });
     await tester.pumpWidget(const MyApp());
-    await tester.scrollUntilVisible(find.text('마이크로 녹음'), 300);
+    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('마이크로 녹음'));
     await tester.pumpAndSettle();
     expect(find.text('마이크 권한이 필요합니다.'), findsOneWidget);
@@ -59,39 +98,19 @@ void main() {
     );
   });
 
-  testWidgets('15초 녹음 종료 후 전송 대기, 키 누락 안내', (tester) async {
-    final calls = <String>[];
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SoundService.channel, (call) async {
-          calls.add(call.method);
-          return call.method == 'stop' ? Uint8List.fromList([1, 2, 3]) : null;
-        });
-    await tester.pumpWidget(const MyApp());
-    await tester.scrollUntilVisible(find.text('마이크로 녹음'), 300);
-    await tester.tap(find.text('마이크로 녹음'));
-    await tester.pump();
-    await tester.pump(const Duration(seconds: 15));
-    await tester.pumpAndSettle();
-    expect(calls.where((call) => call == 'stop').length, 1);
-    await tester.ensureVisible(find.text('STT 전송'));
-    await tester.tap(find.text('STT 전송'));
-    await tester.pumpAndSettle();
-    expect(find.text('전사 서비스가 아직 준비되지 않았습니다. 개발자에게 문의해주세요.'), findsOneWidget);
-  });
-  testWidgets('각 전사 기록의 원본을 재생하고 완료·삭제 시 정지', (tester) async {
-    final previousKey = SttConfig.apiKey;
-    SttConfig.apiKey = 'test-only';
-    addTearDown(() => SttConfig.apiKey = previousKey);
-    var recording = 0;
+  testWidgets('15초 종료 후 전사만 호출, 오류 재시도 및 원본 재생·삭제', (tester) async {
+    final client = FakeMucapClient()..fail = true;
+    var stopCount = 0;
     var playing = false;
-    final played = <List<int>>[];
+    final played = <Uint8List>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SoundService.channel, (call) async {
           switch (call.method) {
             case 'stop':
-              return Uint8List.fromList([++recording, 2, 3]);
+              stopCount++;
+              return Uint8List.fromList([7, 2, 3]);
             case 'play':
-              played.add(List<int>.from(call.arguments as Uint8List));
+              played.add(call.arguments as Uint8List);
               playing = true;
               return null;
             case 'stopPlayback':
@@ -99,46 +118,165 @@ void main() {
               return null;
             case 'isPlaying':
               return playing;
+            case 'position':
+              return .2;
             default:
               return null;
           }
         });
-    await tester.pumpWidget(
-      MaterialApp(home: SoundPage(service: FakeTranscriptionService())),
-    );
-    for (var i = 0; i < 2; i++) {
-      await tester.ensureVisible(find.text('마이크로 녹음'));
-      await tester.tap(find.text('마이크로 녹음'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('녹음 종료'));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('STT 전송'));
-      await tester.tap(find.text('STT 전송'));
-      await tester.pumpAndSettle();
-    }
-    final firstRecord = find.ancestor(
-      of: find.text('녹음 1'),
-      matching: find.byType(Card),
-    );
-    final playFirst = find.descendant(
-      of: firstRecord,
-      matching: find.text('녹음 듣기'),
-    );
-    await tester.ensureVisible(playFirst);
-    await tester.tap(playFirst);
+    await tester.pumpWidget(MaterialApp(home: SoundPage(client: client)));
+    await tester.tap(find.byType(SwitchListTile));
     await tester.pumpAndSettle();
-    expect(played.single, [1, 2, 3]);
+    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('마이크로 녹음'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 15));
+    await tester.pumpAndSettle();
+    expect(stopCount, 1);
+    await tester.ensureVisible(find.text('소리 전사'));
+    await tester.tap(find.text('소리 전사'));
+    await tester.pumpAndSettle();
+    expect(find.text('전사 테스트 오류'), findsOneWidget);
+    client.fail = false;
+    await tester.tap(find.text('소리 전사'));
+    await tester.pumpAndSettle();
+    expect(client.uploads.length, 2);
+    expect(client.uploads.last, [7, 2, 3]);
+    expect(find.text('둥7'), findsOneWidget);
+    expect(find.text('[0.00–1.00초] 둥7'), findsOneWidget);
+    expect(find.text('햅틱 재생'), findsNothing);
+    await tester.ensureVisible(find.text('녹음 듣기'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('녹음 듣기'));
+    await tester.pumpAndSettle();
+    expect(played.single, [7, 2, 3]);
     expect(find.text('재생 정지'), findsOneWidget);
-    playing = false; // Native player finished.
-    await tester.pump(const Duration(milliseconds: 250));
+    playing = false;
+    await tester.pump(const Duration(milliseconds: 100));
     await tester.pumpAndSettle();
     expect(find.text('재생 정지'), findsNothing);
-    await tester.tap(playFirst);
-    await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('지우기'));
     await tester.tap(find.text('지우기'));
     await tester.pumpAndSettle();
-    expect(playing, false);
-    expect(find.text('녹음 듣기'), findsNothing);
+    expect(find.text('둥7'), findsNothing);
+  });
+  testWidgets('전사 결과를 유지하며 시각화·햅틱 실패 후 재시도', (tester) async {
+    final client = FakeMucapClient()..failOutputs = true;
+    final integrated = <Map<dynamic, dynamic>>[];
+    var playing = false;
+    var failPlayback = false;
+    var stopCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(HapticService.channel, (call) async {
+          if (call.method == 'isSupported') return true;
+          if (call.method == 'play') fail('Use one native integrated call');
+          if (call.method == 'isPlaying') return false;
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(HapticService.channel, null),
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SoundService.channel, (call) async {
+          if (call.method == 'stop') return Uint8List.fromList([8, 2, 3]);
+          if (call.method == 'playIntegrated') {
+            integrated.add(call.arguments as Map);
+            if (failPlayback) {
+              throw PlatformException(code: 'playback', message: '통합 시작 실패');
+            }
+            playing = true;
+          }
+          if (call.method == 'stopPlayback') {
+            stopCalls++;
+            playing = false;
+          }
+          if (call.method == 'isPlaying') return playing;
+          if (call.method == 'position') return .4;
+          return null;
+        });
+    await tester.pumpWidget(MaterialApp(home: SoundPage(client: client)));
+    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('마이크로 녹음'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('녹음 종료'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('전사·시각화·햅틱 생성'));
+    await tester.tap(find.text('전사·시각화·햅틱 생성'));
+    await tester.pumpAndSettle();
+    expect(client.uploads.length, 1);
+    expect(client.outputCalls, 1);
+    expect(find.text('둥8'), findsOneWidget);
+    expect(find.textContaining('전사는 보관했습니다.'), findsOneWidget);
+    client.failOutputs = false;
+    await tester.ensureVisible(find.text('시각화·햅틱 추가 생성'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('시각화·햅틱 추가 생성'));
+    await tester.pumpAndSettle();
+    expect(client.uploads.length, 1);
+    expect(client.outputCalls, 2);
+    expect(find.byType(MucapVisualization), findsOneWidget);
+    expect(find.text('햅틱 재생'), findsNothing);
+    await tester.ensureVisible(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    expect(integrated.single['audio'], [8, 2, 3]);
+    expect((integrated.single['events'] as List).single['intensity'], .5);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      tester
+          .widget<MucapVisualization>(find.byType(MucapVisualization))
+          .position,
+      .4,
+    );
+    final beforeStop = stopCalls;
+    await tester.tap(find.text('재생 정지'));
+    await tester.pumpAndSettle();
+    expect(stopCalls, greaterThan(beforeStop));
+    expect(playing, isFalse);
+    expect(
+      tester
+          .widget<MucapVisualization>(find.byType(MucapVisualization))
+          .position,
+      0,
+    );
+
+    // Restart and stop both outputs when the app becomes inactive.
+    await tester.tap(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pumpAndSettle();
+    expect(playing, isFalse);
+    expect(find.text('재생 정지'), findsNothing);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    // A failed native start must clean up and allow retry.
+    failPlayback = true;
+    final beforeFailure = stopCalls;
+    await tester.tap(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    expect(stopCalls, greaterThan(beforeFailure + 1));
+    await tester.scrollUntilVisible(
+      find.textContaining('통합 시작 실패'),
+      -250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.textContaining('통합 시작 실패'), findsOneWidget);
+    expect(find.text('재생 정지'), findsNothing);
+    failPlayback = false;
+    await tester.ensureVisible(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('통합 재생'));
+    await tester.pumpAndSettle();
+    playing = false;
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpAndSettle();
+    expect(find.text('재생 정지'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
   });
 }

@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 
-import 'sound_page.dart';
-import 'stt_config.dart';
+import 'pages/sound_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SttConfig.load();
   runApp(const MyApp());
 }
 
@@ -13,7 +11,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: '소리노트',
+    title: 'Sound Recorder',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,

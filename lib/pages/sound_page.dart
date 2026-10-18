@@ -3,20 +3,26 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'sound_service.dart';
-import 'stt_config.dart';
+import '../services/sound_service.dart';
+import '../services/mucap_client.dart';
+import '../models/nonspeech_transcription.dart';
+import '../services/haptic_service.dart';
+import '../widgets/mucap_visualization.dart';
 
 enum CaptureState { ready, starting, recording, stopping, transcribing }
 
 class RecordingEntry {
   RecordingEntry(this.result, Uint8List audio)
     : audio = Uint8List.fromList(audio);
-  final SoundResult result;
+  MucapResult? multimodal;
+  List<HapticEvent> get hapticEvents => multimodal?.events ?? const [];
+  final NonspeechTranscription result;
   final Uint8List audio;
 }
 
 class SoundPage extends StatefulWidget {
-  const SoundPage({super.key, this.service});
+  const SoundPage({super.key, this.service, this.client});
+  final MucapClient? client;
   final SoundService? service;
   @override
   State<SoundPage> createState() => _SoundPageState();
@@ -25,7 +31,12 @@ class SoundPage extends StatefulWidget {
 class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
   late final _service = widget.service ?? SoundService();
   final _results = <RecordingEntry>[];
+  final _haptics = HapticService();
+  bool _hapticsSupported = false;
+  bool _textOnly = false;
+  bool _generatingOutputs = false;
   RecordingEntry? _playing;
+  double _position = 0;
   Timer? _playbackTimer;
   bool _playbackBusy = false;
   int _playbackGeneration = 0;
@@ -40,6 +51,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_checkHaptics());
   }
 
   @override
@@ -58,6 +70,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_service.stopPlayback().catchError((Object _) {}));
     _playbackTimer?.cancel();
     _timer?.cancel();
     unawaited(_service.cancel().catchError((Object _) {}));
@@ -115,42 +128,40 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
 
   Future<void> _transcribe() async {
     if (_audio == null || _busy) return;
-    if (SttConfig.apiKey.trim().isEmpty) {
-      setState(
-        () => _error =
-            SttConfig.loadError ?? '전사 서비스가 아직 준비되지 않았습니다. 개발자에게 문의해주세요.',
-      );
-      return;
-    }
+    final audio = _audio!;
+    final includeOutputs = !_textOnly;
     setState(() {
       _state = CaptureState.transcribing;
       _error = null;
     });
-    final submittedAudio = _audio!;
     try {
-      final result = await _service.transcribe(
-        submittedAudio,
-        SttConfig.endpoint,
-        SttConfig.apiKey,
-        model: SttConfig.model,
-        language: SttConfig.language,
-      );
+      await _stopPlayback();
+      final result = await (widget.client ?? MucapClient()).transcribe(audio);
       if (mounted) {
-        setState(
-          () => _results.insert(0, RecordingEntry(result, submittedAudio)),
-        );
+        final entry = RecordingEntry(result, audio);
+        setState(() => _results.insert(0, entry));
+        if (includeOutputs) await _addOutputs(entry, alreadyBusy: true);
       }
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
-      if (mounted) setState(() => _state = CaptureState.ready);
+      if (mounted) {
+        setState(() {
+          _state = CaptureState.ready;
+        });
+      }
     }
   }
 
   Future<void> _stopPlayback() async {
     _playbackGeneration++;
     _playbackTimer?.cancel();
-    if (mounted) setState(() => _playing = null);
+    if (mounted) {
+      setState(() {
+        _playing = null;
+        _position = 0;
+      });
+    }
     await _service.stopPlayback();
   }
 
@@ -166,42 +177,90 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
       if (!wasPlaying && mounted) {
         final generation = _playbackGeneration;
         setState(() => _playing = entry);
-        await _service.play(entry.audio);
-        if (!mounted || !identical(_playing, entry)) return;
-        _playbackTimer = Timer.periodic(const Duration(milliseconds: 200), (
+        if (entry.multimodal != null && _hapticsSupported) {
+          await _service.playIntegrated(entry.audio, entry.hapticEvents);
+        } else {
+          await _service.play(entry.audio);
+        }
+        if (!mounted ||
+            generation != _playbackGeneration ||
+            !identical(_playing, entry)) {
+          return;
+        }
+        _playbackTimer = Timer.periodic(const Duration(milliseconds: 50), (
           _,
         ) async {
           try {
             final active = await _service.isPlaying();
+            final position = await _service.position();
+            if (mounted &&
+                generation == _playbackGeneration &&
+                identical(_playing, entry)) {
+              setState(() => _position = active ? position : 0);
+            }
             if (mounted &&
                 generation == _playbackGeneration &&
                 identical(_playing, entry) &&
                 !active) {
-              _playbackTimer?.cancel();
-              setState(() => _playing = null);
+              await _stopPlayback();
             }
           } catch (_) {
             if (mounted &&
                 generation == _playbackGeneration &&
                 identical(_playing, entry)) {
-              _playbackTimer?.cancel();
-              setState(() {
-                _playing = null;
-                _error = '녹음 재생 상태를 확인하지 못했습니다.';
-              });
+              await _stopPlayback().catchError((Object _) {});
+              if (mounted) setState(() => _error = '통합 재생 상태를 확인하지 못했습니다.');
             }
           }
         });
       }
-    } catch (_) {
+    } catch (error) {
+      await _stopPlayback().catchError((Object _) {});
       if (mounted) {
-        setState(() {
-          _playing = null;
-          _error = '녹음을 재생하지 못했습니다. 다시 시도해주세요.';
-        });
+        setState(() => _error = '재생에 실패했습니다: ${_message(error)}');
       }
     } finally {
       if (mounted) setState(() => _playbackBusy = false);
+    }
+  }
+
+  Future<void> _checkHaptics() async {
+    try {
+      final supported = await _haptics.isSupported();
+      if (mounted) setState(() => _hapticsSupported = supported);
+    } catch (_) {
+      // Audio playback remains available when haptics cannot initialize.
+    }
+  }
+
+  Future<void> _addOutputs(
+    RecordingEntry entry, {
+    bool alreadyBusy = false,
+  }) async {
+    if ((!alreadyBusy && _busy) || entry.multimodal != null) return;
+    setState(() {
+      _generatingOutputs = true;
+      _state = CaptureState.transcribing;
+      _error = null;
+    });
+    try {
+      await _stopPlayback();
+      final result = await (widget.client ?? MucapClient()).enrich(
+        entry.audio,
+        entry.result,
+      );
+      if (mounted) setState(() => entry.multimodal = result);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = '전사는 보관했습니다. 시각화·햅틱 생성 실패: ${_message(error)}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _generatingOutputs = false;
+          _state = CaptureState.ready;
+        });
+      }
     }
   }
 
@@ -235,35 +294,34 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
       CaptureState.starting => '마이크 준비 중',
       CaptureState.recording => '주변 소리를 듣고 있어요',
       CaptureState.stopping => '녹음 마무리 중',
-      CaptureState.transcribing => 'STT 모델이 전사하는 중',
+      CaptureState.transcribing =>
+        _generatingOutputs ? '전사 완료 · 시각화·햅틱 생성 중' : '소리를 텍스트로 옮기는 중',
     };
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('소리노트'),
-        actions: const [
-          Padding(
-            padding: EdgeInsets.only(right: 20),
-            child: Chip(label: Text('TEST')),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Flutter test')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 640),
           child: ListView(
             padding: const EdgeInsets.all(24),
             children: [
-              Text(
-                '녹음하고, 텍스트로.',
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text('소리를 텍스트로', style: theme.textTheme.headlineMedium),
               const SizedBox(height: 12),
-              const Text('마이크로 녹음한 소리를 텍스트로 확인해보세요.'),
-              const SizedBox(height: 24),
-              const Text('전송 버튼을 누르면 녹음이 음성 인식 서버로 전송됩니다.'),
-              const SizedBox(height: 16),
+              const Text('소리를 녹음하고 텍스트를 확인하세요.'),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                title: const Text('텍스트만 먼저 보기'),
+                subtitle: Text(
+                  _textOnly
+                      ? '필요할 때 시각화·햅틱을 추가로 생성합니다.'
+                      : '시각화·햅틱도 함께 생성합니다.',
+                ),
+                value: _textOnly,
+                onChanged: _busy
+                    ? null
+                    : (value) => setState(() => _textOnly = value),
+              ),
+              const SizedBox(height: 20),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -298,15 +356,12 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                         const SizedBox(height: 8),
                         OutlinedButton.icon(
                           onPressed: _busy ? null : _transcribe,
-                          icon: const Icon(Icons.upload_rounded),
-                          label: const Text('STT 전송'),
+                          icon: const Icon(Icons.text_fields),
+                          label: Text(_textOnly ? '소리 전사' : '전사·시각화·햅틱 생성'),
                         ),
                       ],
                       const SizedBox(height: 8),
-                      const Text(
-                        '최대 15초 · 화면을 벗어나면 녹음 종료',
-                        textAlign: TextAlign.center,
-                      ),
+                      const Text('최대 15초 · 화면을 벗어나면 녹음 종료'),
                     ],
                   ),
                 ),
@@ -317,14 +372,13 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                   child: Text(
                     _error!,
                     style: TextStyle(color: theme.colorScheme.error),
-                    semanticsLabel: '오류: $_error',
                   ),
                 ),
-              const SizedBox(height: 28),
+              const SizedBox(height: 24),
               Row(
                 children: [
                   Expanded(
-                    child: Text('전사 기록', style: theme.textTheme.titleLarge),
+                    child: Text('오디오 기록', style: theme.textTheme.titleLarge),
                   ),
                   if (_results.isNotEmpty)
                     TextButton(
@@ -334,47 +388,82 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                 ],
               ),
               const Text('전사와 녹음은 앱 실행 중에만 보관됩니다.'),
-              const SizedBox(height: 12),
               if (_results.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 28),
-                  child: Text(
-                    '아직 기록이 없어요.\n마이크로 녹음한 뒤 STT 전송을 눌러보세요.',
-                    textAlign: TextAlign.center,
-                  ),
+                  child: Text('아직 기록이 없어요. 녹음 후 소리 전사를 눌러보세요.'),
                 ),
               for (final entry in _results)
                 Card(
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.all(16),
-                    leading: const Icon(Icons.notes),
-                    title: SelectableText(
-                      entry.result.transcript.trim().isEmpty
-                          ? '모델이 전사 텍스트를 반환하지 않았습니다.'
-                          : entry.result.transcript,
-                    ),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('${entry.result.model} · STT 결과'),
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: _busy
-                                ? null
-                                : () => _togglePlayback(entry),
-                            icon: Icon(
-                              identical(_playing, entry)
-                                  ? Icons.stop
-                                  : Icons.play_arrow,
-                            ),
-                            label: Text(
-                              identical(_playing, entry) ? '재생 정지' : '녹음 듣기',
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SelectableText(
+                          entry.result.text,
+                          style: theme.textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${entry.result.model} · ${entry.result.duration.toStringAsFixed(1)}초',
+                        ),
+                        const SizedBox(height: 12),
+                        for (final cue in entry.result.captions)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Text(
+                              '[${cue.time.toStringAsFixed(2)}–${cue.end.toStringAsFixed(2)}초] ${cue.text}',
+                              style: TextStyle(
+                                fontWeight:
+                                    identical(_playing, entry) &&
+                                        cue.time <= _position &&
+                                        _position < cue.end
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
                             ),
                           ),
+                        if (entry.multimodal != null) ...[
+                          const SizedBox(height: 12),
+                          MucapVisualization(
+                            result: entry.multimodal!,
+                            position: identical(_playing, entry)
+                                ? _position
+                                : 0,
+                          ),
+                          const SizedBox(height: 8),
+                          if (!_hapticsSupported)
+                            const Text('이 기기에서는 오디오와 시각화만 재생합니다.'),
+                          if (_hapticsSupported && entry.hapticEvents.isEmpty)
+                            const Text('이 녹음에는 재생할 진동이 없습니다.'),
+                        ] else ...[
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: _busy ? null : () => _addOutputs(entry),
+                            icon: const Icon(Icons.graphic_eq),
+                            label: const Text('시각화·햅틱 추가 생성'),
+                          ),
                         ],
-                      ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: _busy
+                              ? null
+                              : () => _togglePlayback(entry),
+                          icon: Icon(
+                            identical(_playing, entry)
+                                ? Icons.stop
+                                : Icons.play_arrow,
+                          ),
+                          label: Text(
+                            identical(_playing, entry)
+                                ? '재생 정지'
+                                : entry.multimodal != null
+                                ? '통합 재생'
+                                : '녹음 듣기',
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),

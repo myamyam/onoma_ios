@@ -133,6 +133,8 @@ private final class MacSoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAu
     case "stopPlayback":
       stopPlayback()
       result(nil)
+    case "position":
+      result(player?.currentTime ?? 0.0)
     case "isPlaying":
       result(player?.isPlaying ?? false)
     default:
