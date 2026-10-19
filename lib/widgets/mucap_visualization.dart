@@ -158,13 +158,13 @@ class _TimelineGrid extends CustomPainter {
     final vertical = Paint()
       ..color = const Color(0x2e000000)
       ..strokeWidth = 1;
-    for (var i = 0; i < 8; i++) {
-      canvas.drawLine(
-        Offset(size.width * i / 8, 0),
-        Offset(size.width * i / 8, size.height),
-        vertical,
-      );
-    }
+    //for (var i = 0; i < 8; i++) {
+    //  canvas.drawLine(
+    //    Offset(size.width * i / 8, 0),
+    //    Offset(size.width * i / 8, size.height),
+    //    vertical,
+    //  );
+    //}
     canvas.drawLine(
       Offset(0, size.height / 2),
       Offset(size.width, size.height / 2),

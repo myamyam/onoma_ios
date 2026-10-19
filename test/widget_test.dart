@@ -70,7 +70,7 @@ void main() {
     expect(find.text('MuCap 분석'), findsNothing);
     expect(find.text('햅틱 재생'), findsNothing);
     expect(find.byType(TextField), findsNothing);
-    expect(find.text('마이크로 녹음'), findsOneWidget);
+    expect(find.text('녹음'), findsOneWidget);
   });
 
   testWidgets('권한 거부 후 다시 녹음 가능', (tester) async {
@@ -85,14 +85,14 @@ void main() {
           return null;
         });
     await tester.pumpWidget(const MyApp());
-    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.ensureVisible(find.text('녹음'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('마이크로 녹음'));
+    await tester.tap(find.text('녹음'));
     await tester.pumpAndSettle();
     expect(find.text('마이크 권한이 필요합니다.'), findsOneWidget);
     expect(
       tester
-          .widget<FilledButton>(find.widgetWithText(FilledButton, '마이크로 녹음'))
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '녹음'))
           .onPressed,
       isNotNull,
     );
@@ -127,9 +127,9 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: SoundPage(client: client)));
     await tester.tap(find.byType(SwitchListTile));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.ensureVisible(find.text('녹음'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('마이크로 녹음'));
+    await tester.tap(find.text('녹음'));
     await tester.pumpAndSettle();
     await tester.pump(const Duration(seconds: 15));
     await tester.pumpAndSettle();
@@ -144,7 +144,15 @@ void main() {
     expect(client.uploads.length, 2);
     expect(client.uploads.last, [7, 2, 3]);
     expect(find.text('둥7'), findsOneWidget);
+    expect(find.text('[0.00–1.00초] 둥7'), findsNothing);
+    await tester.ensureVisible(find.text('timeline'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('timeline'));
+    await tester.pumpAndSettle();
     expect(find.text('[0.00–1.00초] 둥7'), findsOneWidget);
+    await tester.tap(find.text('timeline'));
+    await tester.pumpAndSettle();
+    expect(find.text('[0.00–1.00초] 둥7'), findsNothing);
     expect(find.text('햅틱 재생'), findsNothing);
     await tester.ensureVisible(find.text('녹음 듣기'));
     await tester.pumpAndSettle();
@@ -197,10 +205,10 @@ void main() {
           return null;
         });
     await tester.pumpWidget(MaterialApp(home: SoundPage(client: client)));
-    await tester.ensureVisible(find.text('마이크로 녹음'));
-    await tester.ensureVisible(find.text('마이크로 녹음'));
+    await tester.ensureVisible(find.text('녹음'));
+    await tester.ensureVisible(find.text('녹음'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('마이크로 녹음'));
+    await tester.tap(find.text('녹음'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('녹음 종료'));
     await tester.pumpAndSettle();
@@ -210,7 +218,7 @@ void main() {
     expect(client.uploads.length, 1);
     expect(client.outputCalls, 1);
     expect(find.text('둥8'), findsOneWidget);
-    expect(find.textContaining('전사는 보관했습니다.'), findsOneWidget);
+    expect(find.textContaining('전사 기록은 보관했습니다.'), findsOneWidget);
     client.failOutputs = false;
     await tester.ensureVisible(find.text('시각화·햅틱 추가 생성'));
     await tester.pumpAndSettle();

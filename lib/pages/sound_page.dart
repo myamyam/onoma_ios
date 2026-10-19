@@ -15,6 +15,7 @@ class RecordingEntry {
   RecordingEntry(this.result, Uint8List audio)
     : audio = Uint8List.fromList(audio);
   MucapResult? multimodal;
+  bool timelineExpanded = false;
   List<HapticEvent> get hapticEvents => multimodal?.events ?? const [];
   final NonspeechTranscription result;
   final Uint8List audio;
@@ -252,7 +253,9 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
       if (mounted) setState(() => entry.multimodal = result);
     } catch (error) {
       if (mounted) {
-        setState(() => _error = '전사는 보관했습니다. 시각화·햅틱 생성 실패: ${_message(error)}');
+        setState(
+          () => _error = '전사 기록은 보관했습니다. 시각화·햅틱 생성 실패: ${_message(error)}',
+        );
       }
     } finally {
       if (mounted) {
@@ -290,7 +293,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
     final theme = Theme.of(context);
     final recording = _state == CaptureState.recording;
     final status = switch (_state) {
-      CaptureState.ready => _audio == null ? '주변의 소리를 담아보세요' : '녹음이 준비되었어요',
+      CaptureState.ready => _audio == null ? '원하는 소리를 녹음하세요' : '녹음이 준비되었어요',
       CaptureState.starting => '마이크 준비 중',
       CaptureState.recording => '주변 소리를 듣고 있어요',
       CaptureState.stopping => '녹음 마무리 중',
@@ -312,9 +315,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
               SwitchListTile(
                 title: const Text('텍스트만 먼저 보기'),
                 subtitle: Text(
-                  _textOnly
-                      ? '필요할 때 시각화·햅틱을 추가로 생성합니다.'
-                      : '시각화·햅틱도 함께 생성합니다.',
+                  _textOnly ? '필요할 때 시각화·햅틱을 추가로 생성합니다.' : '시각화·햅틱도 함께 생성합니다.',
                 ),
                 value: _textOnly,
                 onChanged: _busy
@@ -345,7 +346,7 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                       FilledButton.icon(
                         onPressed: recording ? _stop : (_busy ? null : _start),
                         icon: Icon(recording ? Icons.stop : Icons.mic),
-                        label: Text(recording ? '녹음 종료' : '마이크로 녹음'),
+                        label: Text(recording ? '녹음 종료' : '녹음'),
                       ),
                       if (_state == CaptureState.transcribing)
                         const Padding(
@@ -409,21 +410,34 @@ class _SoundPageState extends State<SoundPage> with WidgetsBindingObserver {
                           '${entry.result.model} · ${entry.result.duration.toStringAsFixed(1)}초',
                         ),
                         const SizedBox(height: 12),
-                        for (final cue in entry.result.captions)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Text(
-                              '[${cue.time.toStringAsFixed(2)}–${cue.end.toStringAsFixed(2)}초] ${cue.text}',
-                              style: TextStyle(
-                                fontWeight:
-                                    identical(_playing, entry) &&
-                                        cue.time <= _position &&
-                                        _position < cue.end
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
+                        TextButton.icon(
+                          onPressed: () => setState(
+                            () => entry.timelineExpanded =
+                                !entry.timelineExpanded,
+                          ),
+                          icon: Icon(
+                            entry.timelineExpanded
+                                ? Icons.expand_more
+                                : Icons.chevron_right,
+                          ),
+                          label: const Text('timeline'),
+                        ),
+                        if (entry.timelineExpanded)
+                          for (final cue in entry.result.captions)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Text(
+                                '[${cue.time.toStringAsFixed(2)}–${cue.end.toStringAsFixed(2)}초] ${cue.text}',
+                                style: TextStyle(
+                                  fontWeight:
+                                      identical(_playing, entry) &&
+                                          cue.time <= _position &&
+                                          _position < cue.end
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
                               ),
                             ),
-                          ),
                         if (entry.multimodal != null) ...[
                           const SizedBox(height: 12),
                           MucapVisualization(
