@@ -34,6 +34,7 @@ private final class MacSoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAu
   private var recorder: AVAudioRecorder?
   private var fileURL: URL?
   private var failure: String?
+  private var pendingStop: FlutterResult?
   private var starting = false
   private var generation = 0
 
@@ -96,17 +97,17 @@ private final class MacSoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAu
         }
       }
     case "stop":
-      recorder?.stop()
-      defer { cleanup() }
-      if let failure = failure {
-        result(FlutterError(code: "interrupted", message: failure, details: nil))
+      guard pendingStop == nil else {
+        result(FlutterError(code: "busy", message: "녹음을 저장하는 중입니다.", details: nil))
         return
       }
-      guard let url = fileURL, let data = try? Data(contentsOf: url), data.count > 44 else {
-        result(FlutterError(code: "empty", message: "녹음된 소리가 없습니다. 다시 녹음해주세요.", details: nil))
-        return
+      pendingStop = result
+      if let recorder = recorder, recorder.isRecording {
+        // AVAudioRecorder finalizes the WAV header before its finish callback.
+        recorder.stop()
+      } else {
+        finishRecordingRead()
       }
-      result(FlutterStandardTypedData(bytes: data))
     case "cancel":
       stopPlayback()
       generation += 1
@@ -147,8 +148,43 @@ private final class MacSoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAu
     recorder?.stop()
   }
 
+  func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+    DispatchQueue.main.async {
+      guard self.recorder === recorder else { return }
+      if !flag && self.failure == nil {
+        self.failure = "녹음 파일을 완성하지 못했습니다. 다시 녹음해주세요."
+      }
+      if self.pendingStop != nil { self.finishRecordingRead() }
+    }
+  }
+
+  private func finishRecordingRead() {
+    guard let result = pendingStop else { return }
+    pendingStop = nil
+    defer { cleanup() }
+    if let failure = failure {
+      result(FlutterError(code: "interrupted", message: failure, details: nil))
+      return
+    }
+    do {
+      guard let url = fileURL else { throw NSError(domain: "SoundNotes", code: 4) }
+      let audio = try AVAudioFile(forReading: url)
+      guard audio.length > 0 else {
+        result(FlutterError(code: "empty",
+          message: "마이크에서 오디오가 저장되지 않았습니다. 연결된 오디오 장치와 마이크 권한을 확인하고 다시 녹음해주세요.",
+          details: nil))
+        return
+      }
+      let data = try Data(contentsOf: url)
+      result(FlutterStandardTypedData(bytes: data))
+    } catch {
+      result(FlutterError(code: "recording", message: "녹음 파일을 읽지 못했습니다. 다시 녹음해주세요.", details: nil))
+    }
+  }
+
   func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
     failure = "오디오 저장 중 오류가 발생했습니다. 다시 녹음해주세요."
+    if pendingStop != nil { finishRecordingRead() }
   }
 
   private func stopPlayback() {
@@ -167,6 +203,9 @@ private final class MacSoundAudioBridge: NSObject, AVAudioRecorderDelegate, AVAu
   }
 
   private func cleanup() {
+    let waiting = pendingStop
+    pendingStop = nil
+    waiting?(FlutterError(code: "cancelled", message: "녹음 저장이 취소되었습니다.", details: nil))
     recorder?.stop()
     recorder = nil
     if let url = fileURL { try? FileManager.default.removeItem(at: url) }
